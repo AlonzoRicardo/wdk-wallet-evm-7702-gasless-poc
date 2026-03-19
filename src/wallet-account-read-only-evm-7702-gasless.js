@@ -19,7 +19,10 @@ import { WalletAccountReadOnly } from '@tetherto/wdk-wallet'
 import { WalletAccountReadOnlyEvm } from '@tetherto/wdk-wallet-evm'
 
 import { createPublicClient, defineChain, http } from 'viem'
-import { createBundlerClient } from 'viem/account-abstraction'
+import { createBundlerClient, createPaymasterClient } from 'viem/account-abstraction'
+import { toAccount } from 'viem/accounts'
+import { toSimpleSmartAccount } from 'permissionless/accounts'
+import { createSmartAccountClient } from 'permissionless'
 
 import { JsonRpcProvider } from 'ethers'
 
@@ -77,6 +80,11 @@ import { ConfigurationError } from './errors.js'
  * @property {string} [transactionHash] - The transaction hash.
  * @property {boolean} success - Whether the user operation was successful.
  */
+
+const DEFAULT_ACCOUNT_LOGIC = '0xe6Cae83BdE06E4c305530e199D7217f42808555B'
+
+const GAS_FEE_MULTIPLIER = 150n
+const GAS_FEE_DIVISOR = 100n
 
 export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountReadOnly {
   /**
@@ -387,9 +395,49 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
 
   /** @private */
   async _getUserOperationGasCost (txs, config) {
-    const { publicClient, bundlerClient } = await this._getViemClients(config)
-
+    const { publicClient, chain } = await this._getViemClients(config)
     const address = await this.getAddress()
+
+    const dummyOwner = toAccount({
+      address,
+      async signMessage () { throw new Error('Read-only account cannot sign.') },
+      async signTypedData () { throw new Error('Read-only account cannot sign.') },
+      async signTransaction () { throw new Error('Read-only account cannot sign.') }
+    })
+
+    const smartAccountParams = {
+      client: publicClient,
+      owner: dummyOwner,
+      eip7702: true
+    }
+
+    if (config.delegationAddress) {
+      smartAccountParams.accountLogicAddress = config.delegationAddress
+    }
+
+    const smartAccount = await toSimpleSmartAccount(smartAccountParams)
+
+    const bundlerUrl = config.bundlerUrl
+    const paymasterUrl = config.paymasterUrl
+
+    const paymasterOption = paymasterUrl
+      ? createPaymasterClient({ transport: http(paymasterUrl) })
+      : true
+
+    const isPimlico = bundlerUrl.includes('pimlico')
+
+    const smartAccountClient = createSmartAccountClient({
+      account: smartAccount,
+      chain,
+      bundlerTransport: http(bundlerUrl),
+      paymaster: paymasterOption,
+      paymasterContext: config.paymasterContext,
+      userOperation: {
+        estimateFeesPerGas: isPimlico
+          ? () => this._estimatePimlicoFeesPerGas(bundlerUrl)
+          : () => this._estimateFeesPerGas(config.provider)
+      }
+    })
 
     const calls = txs.map(tx => ({
       to: tx.to,
@@ -398,20 +446,16 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
     }))
 
     try {
-      const gasEstimate = await bundlerClient.estimateUserOperationGas({
-        account: address,
-        calls
-      })
+      const prepared = await smartAccountClient.prepareUserOperation({ calls })
 
       const {
         callGasLimit,
         verificationGasLimit,
         preVerificationGas,
         paymasterVerificationGasLimit,
-        paymasterPostOpGasLimit
-      } = gasEstimate
-
-      const fees = await publicClient.estimateFeesPerGas()
+        paymasterPostOpGasLimit,
+        maxFeePerGas
+      } = prepared
 
       const totalGas = (callGasLimit || 0n) +
         (verificationGasLimit || 0n) +
@@ -419,13 +463,52 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
         (paymasterVerificationGasLimit || 0n) +
         (paymasterPostOpGasLimit || 0n)
 
-      return totalGas * fees.maxFeePerGas
+      return totalGas * maxFeePerGas
     } catch (error) {
       if (error.message.includes('AA50')) {
         throw new Error('Simulation failed: not enough funds in the account to repay the paymaster.')
       }
 
       throw error
+    }
+  }
+
+  /** @private */
+  async _estimatePimlicoFeesPerGas (bundlerUrl) {
+    const client = createPublicClient({ transport: http(bundlerUrl) })
+
+    const { fast } = await client.request({
+      method: 'pimlico_getUserOperationGasPrice'
+    })
+
+    return {
+      maxFeePerGas: BigInt(fast.maxFeePerGas),
+      maxPriorityFeePerGas: BigInt(fast.maxPriorityFeePerGas)
+    }
+  }
+
+  /** @private */
+  async _estimateFeesPerGas (providerUrl) {
+    const client = createPublicClient({
+      transport: http(typeof providerUrl === 'string' ? providerUrl : undefined)
+    })
+
+    const [block, maxPriorityFeePerGas] = await Promise.all([
+      client.getBlock({ blockTag: 'latest' }),
+      client.estimateMaxPriorityFeePerGas()
+    ])
+
+    const baseFeePerGas = block.baseFeePerGas
+
+    if (!baseFeePerGas) {
+      throw new Error('Base fee not available — chain may not support EIP-1559.')
+    }
+
+    const maxFeePerGas = baseFeePerGas + maxPriorityFeePerGas
+
+    return {
+      maxFeePerGas: maxFeePerGas * GAS_FEE_MULTIPLIER / GAS_FEE_DIVISOR,
+      maxPriorityFeePerGas: maxPriorityFeePerGas * GAS_FEE_MULTIPLIER / GAS_FEE_DIVISOR
     }
   }
 }

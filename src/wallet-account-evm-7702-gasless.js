@@ -47,8 +47,9 @@ const USDT_MAINNET_ADDRESS = '0xdAC17F958D2ee523a2206206994597C13D831ec7'
 
 const DEFAULT_ACCOUNT_LOGIC = '0xe6Cae83BdE06E4c305530e199D7217f42808555B'
 
-const GAS_FEE_MULTIPLIER = 150n
-const GAS_FEE_DIVISOR = 100n
+const FEE_TOLERANCE_COEFFICIENT = 120n
+
+const ERC20_APPROVE_ABI = ['function approve(address spender, uint256 amount) returns (bool)']
 
 /** @implements {IWalletAccount} */
 export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEvm7702Gasless {
@@ -91,6 +92,9 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
 
     /** @private */
     this._ownerAccount = ownerAccount
+
+    /** @private */
+    this._paymasterTokenData = null
 
     /** @private */
     this._smartAccountClient = null
@@ -309,45 +313,6 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
   }
 
   /** @private */
-  async _estimatePimlicoFeesPerGas (bundlerUrl) {
-    const client = createPublicClient({ transport: http(bundlerUrl) })
-
-    const { fast } = await client.request({
-      method: 'pimlico_getUserOperationGasPrice'
-    })
-
-    return {
-      maxFeePerGas: BigInt(fast.maxFeePerGas),
-      maxPriorityFeePerGas: BigInt(fast.maxPriorityFeePerGas)
-    }
-  }
-
-  /** @private */
-  async _estimateFeesPerGas (providerUrl) {
-    const client = createPublicClient({
-      transport: http(typeof providerUrl === 'string' ? providerUrl : undefined)
-    })
-
-    const [block, maxPriorityFeePerGas] = await Promise.all([
-      client.getBlock({ blockTag: 'latest' }),
-      client.estimateMaxPriorityFeePerGas()
-    ])
-
-    const baseFeePerGas = block.baseFeePerGas
-
-    if (!baseFeePerGas) {
-      throw new Error('Base fee not available — chain may not support EIP-1559.')
-    }
-
-    const maxFeePerGas = baseFeePerGas + maxPriorityFeePerGas
-
-    return {
-      maxFeePerGas: maxFeePerGas * GAS_FEE_MULTIPLIER / GAS_FEE_DIVISOR,
-      maxPriorityFeePerGas: maxPriorityFeePerGas * GAS_FEE_MULTIPLIER / GAS_FEE_DIVISOR
-    }
-  }
-
-  /** @private */
   async _getAuthorization (config = this._config) {
     const delegation = await this._ownerAccount.getDelegation()
 
@@ -390,6 +355,13 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
       value: BigInt(tx.value || 0)
     }))
 
+    const { isSponsored, paymasterToken } = config
+
+    if (!isSponsored && paymasterToken) {
+      const approvalCalls = await this._getPaymasterApprovalCalls(config)
+      calls.unshift(...approvalCalls)
+    }
+
     const prepareParams = { calls }
 
     if (authorization) {
@@ -429,13 +401,24 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
     const smartAccountClient = await this._getSmartAccountClient(config)
     const authorization = await this._getAuthorization(config)
 
-    const userOpParams = {
-      calls: txs.map(tx => ({
-        to: tx.to,
-        data: tx.data || '0x',
-        value: BigInt(tx.value || 0)
-      }))
+    const calls = txs.map(tx => ({
+      to: tx.to,
+      data: tx.data || '0x',
+      value: BigInt(tx.value || 0)
+    }))
+
+    const { isSponsored, paymasterToken } = config
+
+    if (!isSponsored && paymasterToken) {
+      const gasCostInWei = await this._getUserOperationGasCost(txs, config)
+      const exchangeRate = await this._getPaymasterTokenExchangeRate(config)
+      const gasCostInToken = (gasCostInWei * exchangeRate + (10n ** 18n - 1n)) / (10n ** 18n)
+      const amountToApprove = gasCostInToken * FEE_TOLERANCE_COEFFICIENT / 100n
+      const approvalCalls = await this._getPaymasterApprovalCalls(config, amountToApprove)
+      calls.unshift(...approvalCalls)
     }
+
+    const userOpParams = { calls }
 
     if (authorization) {
       userOpParams.authorization = authorization
@@ -450,5 +433,85 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
 
       throw err
     }
+  }
+
+  /** @private */
+  async _getPaymasterApprovalCalls (config, amountToApprove) {
+    const { paymasterToken } = config
+    const paymasterAddress = await this._getPaymasterAddress(config)
+    const tokenAddress = paymasterToken.address
+    const chainId = await this._getChainId()
+
+    const currentAllowance = await this.getAllowance(tokenAddress, paymasterAddress)
+
+    // If no specific amount requested (estimation), use a large value so the paymaster accepts the simulation
+    const requiredAmount = amountToApprove || 10n ** 12n
+
+    if (currentAllowance >= requiredAmount) {
+      return []
+    }
+
+    const contract = new Contract(tokenAddress, ERC20_APPROVE_ABI)
+    const calls = []
+
+    // USDT on Ethereum mainnet requires resetting allowance to 0 before setting a new value
+    if (chainId === 1n &&
+        tokenAddress.toLowerCase() === USDT_MAINNET_ADDRESS.toLowerCase() &&
+        currentAllowance > 0n) {
+      calls.push({
+        to: tokenAddress,
+        value: 0n,
+        data: contract.interface.encodeFunctionData('approve', [paymasterAddress, 0])
+      })
+    }
+
+    calls.push({
+      to: tokenAddress,
+      value: 0n,
+      data: contract.interface.encodeFunctionData('approve', [paymasterAddress, requiredAmount])
+    })
+
+    return calls
+  }
+
+  /** @private */
+  async _getPaymasterTokenData (config) {
+    if (this._paymasterTokenData) {
+      return this._paymasterTokenData
+    }
+
+    const paymasterUrl = config.paymasterUrl || config.bundlerUrl
+
+    const client = createPublicClient({ transport: http(paymasterUrl) })
+
+    const result = await client.request({
+      method: 'pm_supportedERC20Tokens',
+      params: ['0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108']
+    })
+
+    this._paymasterTokenData = result
+
+    return this._paymasterTokenData
+  }
+
+  /** @private */
+  async _getPaymasterAddress (config) {
+    const data = await this._getPaymasterTokenData(config)
+
+    return data.paymasterMetadata.address
+  }
+
+  /** @private */
+  async _getPaymasterTokenExchangeRate (config) {
+    const data = await this._getPaymasterTokenData(config)
+    const tokenAddress = config.paymasterToken.address.toLowerCase()
+
+    const token = data.tokens.find(t => t.address.toLowerCase() === tokenAddress)
+
+    if (!token) {
+      throw new Error(`Paymaster does not support token ${config.paymasterToken.address}.`)
+    }
+
+    return BigInt(token.exchangeRate)
   }
 }
