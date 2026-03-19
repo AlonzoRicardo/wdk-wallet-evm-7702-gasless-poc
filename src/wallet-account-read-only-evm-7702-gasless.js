@@ -54,17 +54,15 @@ import { ConfigurationError } from './errors.js'
 /**
  * @typedef {Object} Evm7702GaslessSponsorshipPolicyConfig
  * @property {true} isSponsored - Whether the paymaster is sponsoring the account.
- * @property {false} [useNativeCoins] - Whether to use native coins for gas payment.
- * @property {Object} [paymasterContext] - Provider-specific paymaster context (e.g. { sponsorshipPolicyId } for Pimlico).
+ * @property {string} [sponsorshipPolicyId] - The sponsorship policy ID (e.g. for Pimlico or Candide).
  */
 
 /**
  * @typedef {Object} Evm7702GaslessPaymasterTokenConfig
  * @property {false} [isSponsored] - Whether the paymaster is sponsoring the account.
- * @property {false} [useNativeCoins] - Whether to use native coins for gas payment.
+ * @property {string} paymasterAddress - The address of the paymaster smart contract.
  * @property {Object} paymasterToken - The paymaster token configuration.
  * @property {string} paymasterToken.address - The address of the paymaster token.
- * @property {Object} [paymasterContext] - Provider-specific paymaster context.
  * @property {number | bigint} [transferMaxFee] - The maximum fee amount for transfer operations.
  */
 
@@ -80,8 +78,6 @@ import { ConfigurationError } from './errors.js'
  * @property {string} [transactionHash] - The transaction hash.
  * @property {boolean} success - Whether the user operation was successful.
  */
-
-const DEFAULT_ACCOUNT_LOGIC = '0xe6Cae83BdE06E4c305530e199D7217f42808555B'
 
 const GAS_FEE_MULTIPLIER = 150n
 const GAS_FEE_DIVISOR = 100n
@@ -324,8 +320,18 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
     }
 
     if (!isSponsored) {
-      if (!paymasterToken) {
-        throw new ConfigurationError('Missing required paymaster token configuration fields: paymasterToken.')
+      const paymasterMissing = []
+
+      if (!config.paymasterAddress) {
+        paymasterMissing.push('paymasterAddress')
+      }
+
+      if (!config.paymasterToken) {
+        paymasterMissing.push('paymasterToken')
+      }
+
+      if (paymasterMissing.length > 0) {
+        throw new ConfigurationError(`Missing required paymaster token configuration fields: ${paymasterMissing.join(', ')}.`)
       }
     }
   }
@@ -385,6 +391,19 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
   }
 
   /** @private */
+  _buildPaymasterContext (config) {
+    if (config.isSponsored && config.sponsorshipPolicyId) {
+      return { sponsorshipPolicyId: config.sponsorshipPolicyId }
+    }
+
+    if (config.paymasterToken) {
+      return { token: config.paymasterToken.address }
+    }
+
+    return undefined
+  }
+
+  /** @private */
   async _getEvmReadOnlyAccount () {
     const address = await this.getAddress()
 
@@ -431,7 +450,7 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
       chain,
       bundlerTransport: http(bundlerUrl),
       paymaster: paymasterOption,
-      paymasterContext: config.paymasterContext,
+      paymasterContext: this._buildPaymasterContext(config),
       userOperation: {
         estimateFeesPerGas: isPimlico
           ? () => this._estimatePimlicoFeesPerGas(bundlerUrl)
