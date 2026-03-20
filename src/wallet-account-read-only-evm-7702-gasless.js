@@ -299,7 +299,7 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
    * @returns {void}
    */
   _validateConfig (config) {
-    const { provider, bundlerUrl, isSponsored, paymasterToken } = config
+    const { provider, bundlerUrl, isSponsored } = config
     const missingFields = []
 
     if (!provider) {

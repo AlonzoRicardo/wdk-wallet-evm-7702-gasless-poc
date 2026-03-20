@@ -89,7 +89,6 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
     /** @private */
     this._ownerAccount = ownerAccount
 
-
     /** @private */
     this._smartAccountClient = null
   }
@@ -161,8 +160,7 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
       }
     }
 
-    const abi = ['function approve(address spender, uint256 amount) returns (bool)']
-    const contract = new Contract(token, abi)
+    const contract = new Contract(token, ERC20_APPROVE_ABI)
 
     const tx = {
       to: token,
