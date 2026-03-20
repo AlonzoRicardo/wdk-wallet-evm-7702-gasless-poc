@@ -32,7 +32,7 @@ import { ConfigurationError } from './errors.js'
 
 /** @typedef {import('@tetherto/wdk-wallet-evm').EvmTransaction} EvmTransaction */
 /** @typedef {import('@tetherto/wdk-wallet-evm').TransactionResult} TransactionResult */
-/** @typedef {import('@tetherto/wdk-wallet-evm').TransferOptions} TransferOptions */
+/** @typedef {import('@tetherto/wdk-wallet-evm').EvmTransferOptions} EvmTransferOptions */
 /** @typedef {import('@tetherto/wdk-wallet-evm').TransferResult} TransferResult */
 
 /** @typedef {import('@tetherto/wdk-wallet-evm').EvmTransactionReceipt} EvmTransactionReceipt */
@@ -117,7 +117,6 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
      * @type {bigint | undefined}
      */
     this._chainId = undefined
-
   }
 
   /**
@@ -198,7 +197,7 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
   /**
    * Quotes the costs of a transfer operation.
    *
-   * @param {TransferOptions} options - The transfer's options.
+   * @param {EvmTransferOptions} options - The transfer's options.
    * @param {Partial<Evm7702GaslessSponsorshipPolicyConfig | Evm7702GaslessPaymasterTokenConfig>} [config] - If set, overrides the given configuration options.
    * @returns {Promise<Omit<TransferResult, 'hash'>>} The transfer's quotes.
    */
