@@ -45,8 +45,6 @@ import WalletAccountReadOnlyEvm7702Gasless from './wallet-account-read-only-evm-
 
 const USDT_MAINNET_ADDRESS = '0xdAC17F958D2ee523a2206206994597C13D831ec7'
 
-const DEFAULT_ACCOUNT_LOGIC = '0xe6Cae83BdE06E4c305530e199D7217f42808555B'
-
 const ERC20_APPROVE_ABI = ['function approve(address spender, uint256 amount) returns (bool)']
 
 /** @implements {IWalletAccount} */
@@ -243,6 +241,8 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
    */
   dispose () {
     this._ownerAccount.dispose()
+    this._ownerAccount = null
+    this._smartAccountClient = null
   }
 
   /** @private */
@@ -270,17 +270,12 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
       const { publicClient, chain } = await this._getViemClients(config)
       const viemOwner = this._getViemOwner()
 
-      const smartAccountParams = {
+      const smartAccount = await toSimpleSmartAccount({
         client: publicClient,
         owner: viemOwner,
-        eip7702: true
-      }
-
-      if (config.delegationAddress) {
-        smartAccountParams.accountLogicAddress = config.delegationAddress
-      }
-
-      const smartAccount = await toSimpleSmartAccount(smartAccountParams)
+        eip7702: true,
+        accountLogicAddress: config.delegationAddress
+      })
 
       const bundlerUrl = config.bundlerUrl
       const paymasterUrl = config.paymasterUrl
@@ -312,15 +307,13 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
   async _getAuthorization (config = this._config) {
     const delegation = await this._ownerAccount.getDelegation()
 
-    const delegationAddress = config.delegationAddress || DEFAULT_ACCOUNT_LOGIC
-
     if (delegation.isDelegated &&
-        delegation.delegateAddress.toLowerCase() === delegationAddress.toLowerCase()) {
+        delegation.delegateAddress.toLowerCase() === config.delegationAddress.toLowerCase()) {
       return null
     }
 
     const wdkAuth = await this._ownerAccount.signAuthorization({
-      address: delegationAddress
+      address: config.delegationAddress
     })
 
     return {

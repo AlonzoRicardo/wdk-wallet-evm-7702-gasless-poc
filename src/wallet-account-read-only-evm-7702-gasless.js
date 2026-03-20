@@ -48,7 +48,7 @@ import { ConfigurationError } from './errors.js'
  * @property {string | Eip1193Provider} provider - The url of the rpc provider, or an instance of a class that implements eip-1193.
  * @property {string} bundlerUrl - The url of the bundler/paymaster service.
  * @property {string} [paymasterUrl] - The url of the paymaster service if different from bundlerUrl (e.g. for Candide which uses separate endpoints).
- * @property {string} [delegationAddress] - The address of the smart account implementation to delegate to. If not provided, permissionless.js defaults to the standard SimpleAccount implementation.
+ * @property {string} delegationAddress - The address of the smart account implementation to delegate to (e.g. '0xe6Cae83BdE06E4c305530e199D7217f42808555B' for SimpleAccount).
  */
 
 /**
@@ -91,6 +91,8 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
    */
   constructor (address, config) {
     super(address)
+
+    this._validateConfig(config)
 
     /**
      * The read-only evm 7702 gasless wallet account configuration.
@@ -315,6 +317,10 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
       missingFields.push('bundlerUrl')
     }
 
+    if (!config.delegationAddress) {
+      missingFields.push('delegationAddress')
+    }
+
     if (missingFields.length > 0) {
       throw new ConfigurationError(`Missing required configuration fields: ${missingFields.join(', ')}.`)
     }
@@ -424,17 +430,12 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
       async signTransaction () { throw new Error('Read-only account cannot sign.') }
     })
 
-    const smartAccountParams = {
+    const smartAccount = await toSimpleSmartAccount({
       client: publicClient,
       owner: dummyOwner,
-      eip7702: true
-    }
-
-    if (config.delegationAddress) {
-      smartAccountParams.accountLogicAddress = config.delegationAddress
-    }
-
-    const smartAccount = await toSimpleSmartAccount(smartAccountParams)
+      eip7702: true,
+      accountLogicAddress: config.delegationAddress
+    })
 
     const bundlerUrl = config.bundlerUrl
     const paymasterUrl = config.paymasterUrl
