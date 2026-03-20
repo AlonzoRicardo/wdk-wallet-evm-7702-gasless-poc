@@ -118,13 +118,6 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
      */
     this._chainId = undefined
 
-    /**
-     * The owner account address.
-     *
-     * @protected
-     * @type {string}
-     */
-    this._ownerAccountAddress = address
   }
 
   /**
@@ -280,7 +273,7 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
    * @returns {Promise<boolean>} True if the signature is valid.
    */
   async verify (message, signature) {
-    const evmReadOnlyAccount = new WalletAccountReadOnlyEvm(this._ownerAccountAddress, this._config)
+    const evmReadOnlyAccount = new WalletAccountReadOnlyEvm(this._address, this._config)
     return await evmReadOnlyAccount.verify(message, signature)
   }
 
@@ -292,7 +285,7 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
    * @returns {Promise<boolean>} True if the signature is valid.
    */
   async verifyTypedData (typedData, signature) {
-    const evmReadOnlyAccount = new WalletAccountReadOnlyEvm(this._ownerAccountAddress, this._config)
+    const evmReadOnlyAccount = new WalletAccountReadOnlyEvm(this._address, this._config)
 
     return await evmReadOnlyAccount.verifyTypedData(typedData, signature)
   }
