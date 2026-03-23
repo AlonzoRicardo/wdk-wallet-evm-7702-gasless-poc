@@ -408,6 +408,17 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
     }
 
     try {
+      // USDT on Ethereum mainnet requires a higher callGasLimit due to its non-standard
+      // transfer implementation consuming more gas than bundlers typically estimate.
+      const chainId = await this._getChainId()
+      const targetsUsdt = chainId === 1n && calls.some(
+        c => c.to?.toLowerCase() === USDT_MAINNET_ADDRESS.toLowerCase()
+      )
+
+      if (targetsUsdt) {
+        return await this._sendUserOperationWithGasBump(smartAccountClient, userOpParams)
+      }
+
       return await smartAccountClient.sendUserOperation(userOpParams)
     } catch (err) {
       if (err.message.includes('AA50')) {
@@ -416,6 +427,25 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
 
       throw err
     }
+  }
+
+  /** @private */
+  async _sendUserOperationWithGasBump (smartAccountClient, userOpParams) {
+    const prepared = await smartAccountClient.prepareUserOperation(userOpParams)
+    prepared.callGasLimit = prepared.callGasLimit * 150n / 100n
+
+    const signature = await smartAccountClient.account.signUserOperation(prepared)
+
+    const { formatUserOperationRequest } = await import('viem/account-abstraction')
+    const rpcParams = formatUserOperationRequest(prepared)
+
+    return await smartAccountClient.request({
+      method: 'eth_sendUserOperation',
+      params: [
+        { ...rpcParams, signature },
+        smartAccountClient.account.entryPoint.address
+      ]
+    })
   }
 
   /** @private */

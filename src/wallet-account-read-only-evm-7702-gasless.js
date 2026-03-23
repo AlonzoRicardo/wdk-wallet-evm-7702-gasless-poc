@@ -398,7 +398,7 @@ export default class WalletAccountReadOnlyEvm7702Gasless extends WalletAccountRe
       return { token: config.paymasterToken.address }
     }
 
-    return undefined
+    return {}
   }
 
   /** @private */
