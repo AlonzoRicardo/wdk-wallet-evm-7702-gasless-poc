@@ -19,7 +19,7 @@ import { Contract } from 'ethers'
 import { WalletAccountEvm } from '@tetherto/wdk-wallet-evm'
 
 import { http } from 'viem'
-import { createPaymasterClient } from 'viem/account-abstraction'
+import { createPaymasterClient, formatUserOperationRequest } from 'viem/account-abstraction'
 import { toAccount } from 'viem/accounts'
 import { toSimpleSmartAccount } from 'permissionless/accounts'
 import { createSmartAccountClient } from 'permissionless'
@@ -46,6 +46,9 @@ import WalletAccountReadOnlyEvm7702Gasless from './wallet-account-read-only-evm-
 const USDT_MAINNET_ADDRESS = '0xdAC17F958D2ee523a2206206994597C13D831ec7'
 
 const ERC20_APPROVE_ABI = ['function approve(address spender, uint256 amount) returns (bool)']
+
+const GAS_LIMIT_BUFFER = 150n
+const GAS_LIMIT_DIVISOR = 100n
 
 /** @implements {IWalletAccount} */
 export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEvm7702Gasless {
@@ -408,18 +411,25 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
     }
 
     try {
-      // USDT on Ethereum mainnet requires a higher callGasLimit due to its non-standard
-      // transfer implementation consuming more gas than bundlers typically estimate.
-      const chainId = await this._getChainId()
-      const targetsUsdt = chainId === 1n && calls.some(
-        c => c.to?.toLowerCase() === USDT_MAINNET_ADDRESS.toLowerCase()
-      )
+      // Some bundlers underestimate gas limits (e.g. Candide's verificationGasLimit
+      // for ERC-20 paymaster, or callGasLimit for USDT on mainnet). We estimate first,
+      // apply a 50% safety buffer, then re-prepare so the paymaster signs over the
+      // bumped values, and finally sign and submit.
+      const estimated = await smartAccountClient.prepareUserOperation(userOpParams)
 
-      if (targetsUsdt) {
-        return await this._sendUserOperationWithGasBump(smartAccountClient, userOpParams)
-      }
+      const prepared = await smartAccountClient.prepareUserOperation({
+        ...userOpParams,
+        callGasLimit: estimated.callGasLimit * GAS_LIMIT_BUFFER / GAS_LIMIT_DIVISOR,
+        verificationGasLimit: estimated.verificationGasLimit * GAS_LIMIT_BUFFER / GAS_LIMIT_DIVISOR
+      })
 
-      return await smartAccountClient.sendUserOperation(userOpParams)
+      const signature = await smartAccountClient.account.signUserOperation(prepared)
+      const rpcParams = formatUserOperationRequest({ ...prepared, signature })
+
+      return await smartAccountClient.request({
+        method: 'eth_sendUserOperation',
+        params: [rpcParams, smartAccountClient.account.entryPoint.address]
+      })
     } catch (err) {
       if (err.message.includes('AA50')) {
         throw new Error('Not enough funds on the account to repay the paymaster.')
@@ -427,25 +437,6 @@ export default class WalletAccountEvm7702Gasless extends WalletAccountReadOnlyEv
 
       throw err
     }
-  }
-
-  /** @private */
-  async _sendUserOperationWithGasBump (smartAccountClient, userOpParams) {
-    const prepared = await smartAccountClient.prepareUserOperation(userOpParams)
-    prepared.callGasLimit = prepared.callGasLimit * 150n / 100n
-
-    const signature = await smartAccountClient.account.signUserOperation(prepared)
-
-    const { formatUserOperationRequest } = await import('viem/account-abstraction')
-    const rpcParams = formatUserOperationRequest(prepared)
-
-    return await smartAccountClient.request({
-      method: 'eth_sendUserOperation',
-      params: [
-        { ...rpcParams, signature },
-        smartAccountClient.account.entryPoint.address
-      ]
-    })
   }
 
   /** @private */
